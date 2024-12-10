@@ -1,11 +1,19 @@
 package main
 
 import (
+	"chirpy/internal/database"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"slices"
+	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
@@ -13,6 +21,10 @@ type apiConfig struct {
 }
 
 func main() {
+	godotenv.Load()
+
+	dbURL := os.Getenv("DB_URL")
+
 	serveMux := http.NewServeMux()
 
 	server := http.Server{
@@ -30,7 +42,15 @@ func main() {
 	serveMux.Handle("GET /admin/metrics", http.HandlerFunc(cfg.metricsHandler))
 	serveMux.Handle("POST /admin/reset", http.HandlerFunc(cfg.resetMetricsHandler))
 
-	err := server.ListenAndServe()
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	dbQueries := database.New(db)
+	fmt.Println(dbQueries)
+
+	err = server.ListenAndServe()
 	if err != nil {
 		fmt.Println(err.Error())
 	}
@@ -95,15 +115,15 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 	//checks here
 
 	type returnVals struct {
-		Err   string `json:"error"`
-		Valid bool   `json:"valid"`
+		Err         string `json:"error"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	respBody := returnVals{}
 	var code int
 
 	if len(params.Body) <= 140 {
-		respBody.Valid = true
+		respBody.CleanedBody = cleanChirp(params.Body)
 		code = 200
 	} else {
 		respBody.Err = "Chirp is too long"
@@ -120,4 +140,23 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(dat)
+}
+
+func cleanChirp(chirp string) string {
+
+	naughtyWords := []string{
+		"kerfuffle",
+		"sharbert",
+		"fornax",
+	}
+
+	words := strings.Split(chirp, " ")
+
+	for i, word := range words {
+		if slices.Contains(naughtyWords, strings.ToLower(word)) {
+			words[i] = "****"
+		}
+	}
+
+	return strings.Join(words, " ")
 }
