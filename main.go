@@ -11,13 +11,16 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             database.Queries
 }
 
 func main() {
@@ -32,23 +35,24 @@ func main() {
 		Addr:    ":8080",
 	}
 
-	cfg := apiConfig{
-		fileserverHits: atomic.Int32{},
-	}
-
-	serveMux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
-	serveMux.Handle("GET /api/healthz", http.HandlerFunc(healthHandler))
-	serveMux.Handle("POST /api/validate_chirp", http.HandlerFunc(validateHandler))
-	serveMux.Handle("GET /admin/metrics", http.HandlerFunc(cfg.metricsHandler))
-	serveMux.Handle("POST /admin/reset", http.HandlerFunc(cfg.resetMetricsHandler))
-
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err.Error())
 	}
 
 	dbQueries := database.New(db)
-	fmt.Println(dbQueries)
+
+	cfg := apiConfig{
+		fileserverHits: atomic.Int32{},
+		db:             *dbQueries,
+	}
+
+	serveMux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
+	serveMux.Handle("GET /api/healthz", http.HandlerFunc(healthHandler))
+	serveMux.Handle("POST /api/validate_chirp", http.HandlerFunc(validateHandler))
+	serveMux.Handle("POST /api/users", http.HandlerFunc(cfg.usersHandler))
+	serveMux.Handle("GET /admin/metrics", http.HandlerFunc(cfg.metricsHandler))
+	serveMux.Handle("POST /admin/reset", http.HandlerFunc(cfg.resetMetricsHandler))
 
 	err = server.ListenAndServe()
 	if err != nil {
@@ -89,13 +93,69 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) resetMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	cfg.fileserverHits.Store(0)
+	if os.Getenv("PLATFORM") == "dev" {
+		cfg.fileserverHits.Store(0)
+		cfg.db.Reset(r.Context())
 
-	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte("OK"))
-	if err != nil {
-		fmt.Println(err.Error())
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte("OK"))
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+	} else {
+		w.WriteHeader(http.StatusForbidden)
+		_, err := w.Write([]byte("FORBIDDEN"))
+		if err != nil {
+			fmt.Println(err.Error())
+		}
 	}
+}
+
+func (cfg *apiConfig) usersHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	type returnVals struct {
+		ID         uuid.UUID `json:"id"`
+		Email      string    `json:"email"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+	}
+
+	respBody, err := cfg.db.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	respStruct := returnVals{
+		ID:         respBody.ID,
+		Email:      respBody.Email,
+		Created_at: respBody.CreatedAt,
+		Updated_at: respBody.UpdatedAt,
+	}
+
+	dat, err := json.Marshal(respStruct)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	w.Write(dat)
 }
 
 func validateHandler(w http.ResponseWriter, r *http.Request) {
@@ -111,8 +171,6 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
-
-	//checks here
 
 	type returnVals struct {
 		Err         string `json:"error"`
