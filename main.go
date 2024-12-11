@@ -49,7 +49,9 @@ func main() {
 
 	serveMux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	serveMux.Handle("GET /api/healthz", http.HandlerFunc(healthHandler))
-	serveMux.Handle("POST /api/validate_chirp", http.HandlerFunc(validateHandler))
+	serveMux.Handle("GET /api/chirps", http.HandlerFunc(cfg.getChirpsHandler))
+	serveMux.Handle("GET /api/chirps/{chirpID}", http.HandlerFunc(cfg.getChirpHandler))
+	serveMux.Handle("POST /api/chirps", http.HandlerFunc(cfg.chirpsHandler))
 	serveMux.Handle("POST /api/users", http.HandlerFunc(cfg.usersHandler))
 	serveMux.Handle("GET /admin/metrics", http.HandlerFunc(cfg.metricsHandler))
 	serveMux.Handle("POST /admin/reset", http.HandlerFunc(cfg.resetMetricsHandler))
@@ -158,9 +160,10 @@ func (cfg *apiConfig) usersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(dat)
 }
 
-func validateHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body string    `json:"body"`
+		User uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -172,23 +175,26 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type returnVals struct {
-		Err         string `json:"error"`
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	respBody := returnVals{}
-	var code int
+	newChirp := database.CreateChirpParams{}
 
 	if len(params.Body) <= 140 {
-		respBody.CleanedBody = cleanChirp(params.Body)
-		code = 200
+		newChirp.Body = cleanChirp(params.Body)
 	} else {
-		respBody.Err = "Chirp is too long"
-		code = 400
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		w.Write([]byte("Chirp Too Long"))
+		return
+	}
+	newChirp.UserID = params.User
+
+	enteredChirp, err := cfg.db.CreateChirp(r.Context(), newChirp)
+	if err != nil {
+		log.Printf("Error creating chirp: %s", err)
+		w.WriteHeader(500)
+		return
 	}
 
-	dat, err := json.Marshal(respBody)
+	dat, err := json.Marshal(enteredChirp)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
 		w.WriteHeader(500)
@@ -196,7 +202,49 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
+	w.WriteHeader(201)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("Error retrieving feed: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	dat, err := json.Marshal(chirps)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
+
+	chirp, err := cfg.db.GetChirp(r.Context(), uuid.MustParse(r.PathValue("chirpID")))
+	if err != nil {
+		log.Printf("Error retrieving chirp: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+
+	dat, err := json.Marshal(chirp)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
 	w.Write(dat)
 }
 
