@@ -22,12 +22,14 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             database.Queries
+	tokenSecret    string
 }
 
 func main() {
 	godotenv.Load()
 
 	dbURL := os.Getenv("DB_URL")
+	tokenSecret := os.Getenv("TOKEN_SECRET")
 
 	serveMux := http.NewServeMux()
 
@@ -46,6 +48,7 @@ func main() {
 	cfg := apiConfig{
 		fileserverHits: atomic.Int32{},
 		db:             *dbQueries,
+		tokenSecret:    tokenSecret,
 	}
 
 	serveMux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
@@ -179,6 +182,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Expires  int    `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -204,11 +208,27 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expiresIn := 0
+
+	if params.Expires == 0 || params.Expires > (3600) {
+		expiresIn = 3600
+	} else {
+		expiresIn = params.Expires
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.tokenSecret, time.Duration(expiresIn)*time.Second)
+	if err != nil {
+		log.Printf("Error generating token: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
 	type returnVals struct {
 		ID         uuid.UUID `json:"id"`
 		Email      string    `json:"email"`
 		Created_at time.Time `json:"created_at"`
 		Updated_at time.Time `json:"updated_at"`
+		Token      string    `json:"token"`
 	}
 
 	respStruct := returnVals{
@@ -216,6 +236,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Email:      user.Email,
 		Created_at: user.CreatedAt,
 		Updated_at: user.UpdatedAt,
+		Token:      token,
 	}
 
 	dat, err := json.Marshal(respStruct)
@@ -246,6 +267,20 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("error parsing token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	user, err := auth.ValidateJWT(token, cfg.tokenSecret)
+	if err != nil {
+		log.Printf("invalid token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
 	newChirp := database.CreateChirpParams{}
 
 	if len(params.Body) <= 140 {
@@ -256,7 +291,7 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Chirp Too Long"))
 		return
 	}
-	newChirp.UserID = params.User
+	newChirp.UserID = user
 
 	enteredChirp, err := cfg.db.CreateChirp(r.Context(), newChirp)
 	if err != nil {
