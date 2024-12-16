@@ -1,0 +1,2 @@
+-- name: GetUserFromRefreshToken :one
+SELECT users.id FROM refresh_tokens LEFT JOIN users ON refresh_tokens.user_id = users.id WHERE refresh_tokens.token = $1 AND (refresh_tokens.expires_at > NOW() OR refresh_tokens.expires_at IS NULL);

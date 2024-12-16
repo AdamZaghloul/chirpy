@@ -52,12 +52,16 @@ func main() {
 	}
 
 	serveMux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
+
 	serveMux.Handle("GET /api/healthz", http.HandlerFunc(healthHandler))
 	serveMux.Handle("GET /api/chirps", http.HandlerFunc(cfg.getChirpsHandler))
 	serveMux.Handle("GET /api/chirps/{chirpID}", http.HandlerFunc(cfg.getChirpHandler))
 	serveMux.Handle("POST /api/chirps", http.HandlerFunc(cfg.chirpsHandler))
 	serveMux.Handle("POST /api/users", http.HandlerFunc(cfg.usersHandler))
 	serveMux.Handle("POST /api/login", http.HandlerFunc(cfg.loginHandler))
+	serveMux.Handle("POST /api/refresh", http.HandlerFunc(cfg.refreshHandler))
+	serveMux.Handle("POST /api/revoke", http.HandlerFunc(cfg.revokeHandler))
+
 	serveMux.Handle("GET /admin/metrics", http.HandlerFunc(cfg.metricsHandler))
 	serveMux.Handle("POST /admin/reset", http.HandlerFunc(cfg.resetMetricsHandler))
 
@@ -218,25 +222,46 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.MakeJWT(user.ID, cfg.tokenSecret, time.Duration(expiresIn)*time.Second)
 	if err != nil {
-		log.Printf("Error generating token: %s", err)
+		log.Printf("Error generating access token: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	rawRefreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Printf("Error generating refresh token: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	refreshTokenParams := database.CreateRefreshTokenParams{
+		Token:  rawRefreshToken,
+		UserID: user.ID,
+	}
+
+	refreshToken, err := cfg.db.CreateRefreshToken(r.Context(), refreshTokenParams)
+	if err != nil {
+		log.Printf("Error inserting refresh token: %s", err)
 		w.WriteHeader(500)
 		return
 	}
 
 	type returnVals struct {
-		ID         uuid.UUID `json:"id"`
-		Email      string    `json:"email"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Token      string    `json:"token"`
+		ID           uuid.UUID `json:"id"`
+		Email        string    `json:"email"`
+		Created_at   time.Time `json:"created_at"`
+		Updated_at   time.Time `json:"updated_at"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
 	}
 
 	respStruct := returnVals{
-		ID:         user.ID,
-		Email:      user.Email,
-		Created_at: user.CreatedAt,
-		Updated_at: user.UpdatedAt,
-		Token:      token,
+		ID:           user.ID,
+		Email:        user.Email,
+		Created_at:   user.CreatedAt,
+		Updated_at:   user.UpdatedAt,
+		Token:        token,
+		RefreshToken: refreshToken.Token,
 	}
 
 	dat, err := json.Marshal(respStruct)
@@ -250,6 +275,65 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	w.Write(dat)
 
+}
+func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting refresh token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	user, err := cfg.db.GetUserFromRefreshToken(r.Context(), token)
+	if err != nil {
+		log.Printf("Error getting user by refresh token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	accessToken, err := auth.MakeJWT(user.UUID, cfg.tokenSecret, time.Duration(3600))
+	if err != nil {
+		log.Printf("Error generating access token: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	type returnVals struct {
+		Token string `json:"token"`
+	}
+
+	respStruct := returnVals{
+		Token: accessToken,
+	}
+
+	dat, err := json.Marshal(respStruct)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting refresh token: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	_, err = cfg.db.RevokeRefreshToken(r.Context(), token)
+	if err != nil {
+		log.Printf("Error revoking refresh token: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.WriteHeader(204)
 }
 
 func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
