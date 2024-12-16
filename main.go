@@ -534,13 +534,50 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	//var filteredChirps []database.Chirp
 
-	chirps, err := cfg.db.GetChirps(r.Context())
+	author := r.URL.Query().Get("author_id")
+	sortMode := r.URL.Query().Get("sort")
+
+	params := database.GetChirpsParams{}
+
+	if author != "" {
+		params.UserID = uuid.MustParse(author)
+		params.Skip = false
+	} else {
+		params.Skip = true
+	}
+
+	if sortMode == "desc" {
+		params.OrderBy = "desc"
+	} else {
+		params.OrderBy = "asc"
+	}
+
+	chirps, err := cfg.db.GetChirps(r.Context(), params)
 	if err != nil {
-		log.Printf("Error retrieving feed: %s", err)
+		log.Printf("Error retrieving chirps: %s", err)
 		w.WriteHeader(500)
 		return
 	}
+
+	/*if author != "" {
+		for _, chirp := range chirps {
+			if chirp.UserID == uuid.MustParse(author) {
+				filteredChirps = append(filteredChirps, chirp)
+			}
+		}
+	} else {
+		filteredChirps = chirps
+	}
+
+	if sortMode == "desc" {
+		sort.Slice(filteredChirps, func(i, j int) bool {
+			timeI := filteredChirps[i].CreatedAt
+			timeJ := filteredChirps[j].CreatedAt
+			return timeI.After(timeJ) // Descending order
+		})
+	}*/
 
 	dat, err := json.Marshal(chirps)
 	if err != nil {
