@@ -63,7 +63,7 @@ func TestGetBearerToken(t *testing.T) {
 	headers := http.Header{}
 	headers.Add("Authorization", "Bearer TOKEN")
 
-	token, err := GetBearerToken(headers)
+	token, err := GetToken(headers, "Bearer ")
 	if err != nil {
 		t.Fatalf("%s", err)
 	}
@@ -76,8 +76,22 @@ func TestGetBearerToken(t *testing.T) {
 func TestGetBearerTokenNoHeader(t *testing.T) {
 	headers := http.Header{}
 
-	_, err := GetBearerToken(headers)
+	_, err := GetToken(headers, "Bearer ")
 	if err == nil {
 		t.Fatalf("Parsed token from headers with no auth header")
+	}
+}
+
+func TestGetAPIToken(t *testing.T) {
+	headers := http.Header{}
+	headers.Add("Authorization", "ApiKey TOKEN")
+
+	token, err := GetToken(headers, "ApiKey ")
+	if err != nil {
+		t.Fatalf("%s", err)
+	}
+
+	if token != "TOKEN" {
+		t.Fatalf("token incorrectly parsed")
 	}
 }
