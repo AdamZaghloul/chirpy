@@ -17,8 +17,22 @@ func main() {
 	godotenv.Load()
 
 	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		fmt.Println("error: no connection string")
+		return
+	}
+
 	tokenSecret := os.Getenv("TOKEN_SECRET")
+	if tokenSecret == "" {
+		fmt.Println("error: no token secret")
+		return
+	}
+
 	polkaKey := os.Getenv("POLKA_KEY")
+	if polkaKey == "" {
+		fmt.Println("error: no polka key")
+		return
+	}
 
 	serveMux := http.NewServeMux()
 
@@ -26,10 +40,19 @@ func main() {
 		Handler: serveMux,
 		Addr:    ":8080",
 	}
-
+	fmt.Printf("Connecting with string: %s\n", dbURL)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err.Error())
+	}
+
+	defer db.Close()
+
+	// Test the connection
+	err = db.Ping()
+	if err != nil {
+		fmt.Printf("Error connecting to the database: %v\n", err)
+		return
 	}
 
 	dbQueries := database.New(db)
